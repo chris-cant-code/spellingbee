@@ -1,0 +1,21 @@
+{
+  "name": "spellingbee-multiplayer",
+  "version": "1.0.0",
+  "description": "Collaborative multiplayer NYT Spelling Bee",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsdom": "^28.1.0",
+    "ngrok": "^5.0.0-beta.2",
+    "node-cron": "^3.0.3",
+    "socket.io": "^4.7.5"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}
