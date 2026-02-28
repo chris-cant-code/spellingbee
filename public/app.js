@@ -2,14 +2,18 @@
 const state = {
   date: null,
   center: null,
-  outer: [],        // current (possibly shuffled) outer letters
-  outerOrig: [],    // canonical order from server
+  outer: [],         // current (possibly shuffled) outer letters
+  outerOrig: [],     // canonical order from server
   totalScore: 0,
   score: 0,
   rank: 'Beginner',
-  foundWords: [],
+  foundWords: [],    // insertion order (most recently found at end)
   playerCount: 1,
-  currentWord: '',  // maintained in JS, not inside an <input>
+  currentWord: '',   // maintained in JS, not inside an <input>
+  letterCounts: {},  // total valid words per starting letter (from server)
+  sortMode: 'recent',          // 'recent' | 'alpha' | 'player'
+  myFoundWords: new Set(),     // words found by this client this session
+  pendingWord: null,           // word just submitted (detect "mine" on word_found)
 };
 
 /* ─── Socket ──────────────────────────────────────────────────────────────── */
@@ -27,6 +31,7 @@ socket.on('room_state', ({ foundWords, score, totalScore, rank, playerCount }) =
   state.playerCount = playerCount;
   renderFoundWords();
   renderScore();
+  renderHints();
   updatePlayerCount(playerCount);
 });
 
@@ -39,8 +44,14 @@ socket.on('word_found', ({ word, points, isPangram, newScore, totalScore, newRan
   state.totalScore = totalScore;
   state.rank       = newRank;
   if (!state.foundWords.includes(word)) state.foundWords.push(word);
+  // Track which words this client found (pendingWord set in submitWord)
+  if (word === state.pendingWord) {
+    state.myFoundWords.add(word);
+    state.pendingWord = null;
+  }
   renderFoundWords();
   renderScore();
+  renderHints();
   if (isPangram) {
     showToast(`${word} — Pangram! +${points}`, 'pangram', 2500);
   } else {
@@ -50,13 +61,14 @@ socket.on('word_found', ({ word, points, isPangram, newScore, totalScore, newRan
 });
 
 socket.on('word_error', ({ word, reason }) => {
+  state.pendingWord = null;
   const messages = {
-    too_short:     'Too short',
+    too_short:      'Too short',
     missing_center: `Must use "${(state.center || '').toUpperCase()}"`,
-    bad_letters:   'Bad letters',
-    already_found: 'Already found!',
-    not_in_list:   'Not in word list',
-    no_puzzle:     'No puzzle loaded',
+    bad_letters:    'Bad letters',
+    already_found:  'Already found!',
+    not_in_list:    'Not in word list',
+    no_puzzle:      'No puzzle loaded',
   };
   showToast(messages[reason] || 'Invalid word', 'error', 1600);
   shakeDisplay();
@@ -69,41 +81,51 @@ socket.on('player_count', ({ count }) => {
 
 /* ─── DOM refs ────────────────────────────────────────────────────────────── */
 const $id = id => document.getElementById(id);
-const elScore       = $id('score');
-const elRank        = $id('rank');
-const elProgressBar = $id('progress-bar');
-const elNextRank    = $id('next-rank-label');
-const elPlayerCount = $id('player-count');
-const elHive        = $id('hive');
-const elWordDisplay = $id('word-display');
-const elGhost       = $id('ghost-input');
-const elOtherPlayer = $id('other-player');
-const elOtherText   = $id('other-player-text');
-const elFoundWords  = $id('found-words');
-const elFoundHeader = $id('found-header');
-const elLoading     = $id('loading');
-const elNoPuzzle    = $id('no-puzzle');
-const elGameArea    = $id('game-area');
-const elDateBtn     = $id('date-picker-btn');
-const elDateLabel   = $id('selected-date-label');
-const elDatePanel   = $id('date-panel');
-const elOverlay     = $id('overlay');
-const elDateList    = $id('date-list');
-const elDeleteBtn   = $id('delete-btn');
-const elSubmitBtn   = $id('submit-btn');
-const elShuffleBtn  = $id('shuffle-btn');
-const elToasts      = $id('toast-container');
+const elScore        = $id('score');
+const elRank         = $id('rank');
+const elProgressBar  = $id('progress-bar');
+const elNextRank     = $id('next-rank-label');
+const elPlayerCount  = $id('player-count');
+const elHive         = $id('hive');
+const elWordDisplay  = $id('word-display');
+const elGhost        = $id('ghost-input');
+const elOtherPlayer  = $id('other-player');
+const elOtherText    = $id('other-player-text');
+const elFoundWords   = $id('found-words');
+const elFoundHeader  = $id('found-header');
+const elHintsSection = $id('hints-section');
+const elHintsList    = $id('hints-list');
+const elLoading      = $id('loading');
+const elNoPuzzle     = $id('no-puzzle');
+const elGameArea     = $id('game-area');
+const elDateBtn      = $id('date-picker-btn');
+const elDateLabel    = $id('selected-date-label');
+const elDatePanel    = $id('date-panel');
+const elOverlay      = $id('overlay');
+const elDateList     = $id('date-list');
+const elDeleteBtn    = $id('delete-btn');
+const elSubmitBtn    = $id('submit-btn');
+const elShuffleBtn   = $id('shuffle-btn');
+const elToasts       = $id('toast-container');
+const elSortTabs     = document.querySelectorAll('.sort-tab');
 
 /* ─── Hive Layout ─────────────────────────────────────────────────────────── */
 function buildHive() {
   elHive.innerHTML = '';
 
-  // Compute hex size from viewport; clamp to a sensible max
+  // Flat-top regular hexagon geometry:
+  //   hexW = 2s,  hexH = √3·s  (s = circumradius)
+  //   → hexW/hexH = 2/√3,  center-to-center distance = hexH
+  // Total hive width  = R·√3 + hexW  (outermost centers ± half-element)
+  // With R = hexH and hexW = hexH·2/√3:  width = hexH·5/√3
+  // → hexH = maxW·√3/5
   const maxW = Math.min(window.innerWidth - 40, 340);
-  const hexSize = Math.round(maxW * 0.29);   // element side length
-  const R = Math.round(hexSize * 1.04);      // center-to-outer-center distance
+  const hexH = Math.round(maxW * 0.30);
+  const hexW = Math.round(hexH * 2 / Math.sqrt(3));
+  const gap  = 3;            // breathing room between tiles (px)
+  const R    = hexH + gap;   // center-to-center distance
 
-  // 7 positions: [0] = center, [1..6] = outer ring (pointy-top, 60° steps)
+  // 7 positions: [0] = center, [1..6] = flat-top outer ring (60° steps)
   const positions = [{ x: 0, y: 0 }];
   for (let i = 0; i < 6; i++) {
     const angle = (Math.PI / 3) * i - Math.PI / 6;
@@ -113,34 +135,33 @@ function buildHive() {
     });
   }
 
-  // Bounding box — pad by half hex + small gap so no tile gets clipped
-  const pad = Math.ceil(hexSize / 2) + 3;
+  // Bounding box: center positions ± half the element size
   const xs = positions.map(p => p.x);
   const ys = positions.map(p => p.y);
-  const bLeft   = Math.min(...xs) - pad;
-  const bTop    = Math.min(...ys) - pad;
-  const bRight  = Math.max(...xs) + pad;
-  const bBottom = Math.max(...ys) + pad;
+  const bLeft   = Math.min(...xs) - Math.ceil(hexW / 2);
+  const bTop    = Math.min(...ys) - Math.ceil(hexH / 2);
+  const bRight  = Math.max(...xs) + Math.ceil(hexW / 2);
+  const bBottom = Math.max(...ys) + Math.ceil(hexH / 2);
 
-  elHive.style.width  = (bRight - bLeft)  + 'px';
+  elHive.style.width  = (bRight - bLeft) + 'px';
   elHive.style.height = (bBottom - bTop) + 'px';
 
-  const letters = [state.center, ...state.outer];
-  const fontSize = Math.round(hexSize * 0.33) + 'px';
+  const letters  = [state.center, ...state.outer];
+  const fontSize = Math.round(hexH * 0.36) + 'px';
 
   positions.forEach((pos, i) => {
     const hex = document.createElement('div');
     hex.className = 'hex' + (i === 0 ? ' center' : '');
     hex.textContent = letters[i] || '';
-    hex.style.left     = (pos.x - bLeft - hexSize / 2) + 'px';
-    hex.style.top      = (pos.y - bTop  - hexSize / 2) + 'px';
-    hex.style.width    = hexSize + 'px';
-    hex.style.height   = hexSize + 'px';
+    hex.style.left     = (pos.x - bLeft - hexW / 2) + 'px';
+    hex.style.top      = (pos.y - bTop  - hexH / 2) + 'px';
+    hex.style.width    = hexW + 'px';
+    hex.style.height   = hexH + 'px';
     hex.style.fontSize = fontSize;
 
     // Tap a letter — no focus stealing
     hex.addEventListener('pointerdown', e => {
-      e.preventDefault();   // prevents focus on any input, prevents scroll
+      e.preventDefault();
       appendLetter(letters[i]);
     });
     elHive.appendChild(hex);
@@ -183,6 +204,7 @@ function isValidWord(text) {
 function submitWord() {
   const word = state.currentWord.trim();
   if (!word || !state.date) return;
+  state.pendingWord = word;
   socket.emit('submit', { word, date: state.date });
 }
 
@@ -211,27 +233,85 @@ function showOtherPlayer(text) {
 }
 
 /* ─── Rendering ───────────────────────────────────────────────────────────── */
+function tierProgressInfo(score, total) {
+  if (!total) return { pct: 0, nextName: null, nextScore: null };
+  const pctOfTotal = score / total;
+  let curIdx = 0;
+  for (let i = 0; i < RANKS.length; i++) {
+    if (pctOfTotal >= RANKS[i].pct) curIdx = i;
+  }
+  const cur  = RANKS[curIdx];
+  const next = RANKS[curIdx + 1];
+  if (!next) return { pct: 1, nextName: null, nextScore: null };
+
+  const curScore  = Math.ceil(cur.pct  * total);
+  const nextScore = Math.ceil(next.pct * total);
+  const pct = nextScore === curScore
+    ? 1
+    : Math.min(1, (score - curScore) / (nextScore - curScore));
+
+  return { pct, nextName: next.name, nextScore };
+}
+
 function renderScore() {
   elScore.textContent = state.score;
   elRank.textContent  = state.rank;
 
-  const pct = state.totalScore > 0 ? Math.min(1, state.score / state.totalScore) : 0;
+  const { pct, nextName, nextScore } = tierProgressInfo(state.score, state.totalScore);
   elProgressBar.style.width = (pct * 100).toFixed(1) + '%';
 
-  const next = nextRankInfo(state.score, state.totalScore);
-  elNextRank.textContent = next ? `→ ${next.name} (${next.scoreNeeded})` : '';
+  elNextRank.textContent = nextName ? `→ ${nextName} at ${nextScore}` : '★ Queen Bee!';
+}
+
+function sortedFoundWords() {
+  const words = [...state.foundWords];
+  if (state.sortMode === 'alpha') return words.sort();
+  if (state.sortMode === 'player') {
+    // My words first (maintaining relative order within each group)
+    return [
+      ...words.filter(w =>  state.myFoundWords.has(w)),
+      ...words.filter(w => !state.myFoundWords.has(w)),
+    ];
+  }
+  // 'recent': most recently found first
+  return words.reverse();
 }
 
 function renderFoundWords() {
   elFoundHeader.textContent = `Found (${state.foundWords.length})`;
   elFoundWords.innerHTML = '';
-  [...state.foundWords].sort().forEach(word => {
+  sortedFoundWords().forEach(word => {
     const span = document.createElement('span');
     span.className = 'found-word';
     span.textContent = word;
-    if (wordIsPangram(word)) span.classList.add('pangram');
+    if (wordIsPangram(word))          span.classList.add('pangram');
+    if (state.myFoundWords.has(word)) span.classList.add('mine');
     elFoundWords.appendChild(span);
   });
+}
+
+function renderHints() {
+  if (!Object.keys(state.letterCounts).length) {
+    elHintsSection.hidden = true;
+    return;
+  }
+  elHintsSection.hidden = false;
+
+  // Count found words per starting letter
+  const foundByLetter = {};
+  state.foundWords.forEach(w => {
+    const ch = w[0];
+    foundByLetter[ch] = (foundByLetter[ch] || 0) + 1;
+  });
+
+  elHintsList.innerHTML = Object.entries(state.letterCounts)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([letter, total]) => {
+      const remaining = total - (foundByLetter[letter] || 0);
+      const done = remaining === 0;
+      return `<span class="hint-chip${done ? ' done' : ''}">${letter}<span class="hint-count">${remaining}</span></span>`;
+    })
+    .join('');
 }
 
 function wordIsPangram(word) {
@@ -257,15 +337,6 @@ const RANKS = [
   { name: 'Genius',     pct: 0.70 },
   { name: 'Queen Bee',  pct: 1.00 },
 ];
-
-function nextRankInfo(score, total) {
-  if (!total) return null;
-  const pct = score / total;
-  for (const r of RANKS) {
-    if (pct < r.pct) return { name: r.name, scoreNeeded: Math.ceil(r.pct * total) };
-  }
-  return null;
-}
 
 /* ─── Toast ───────────────────────────────────────────────────────────────── */
 function showToast(message, type = '', duration = 2000) {
@@ -301,16 +372,18 @@ function shuffleOuter() {
     tries++;
   } while (tries < 20 && next.join() === state.outer.join());
 
-  state.outer = next;
+  // Broadcast to all players in the room — server echoes back to everyone
+  socket.emit('shuffle', { outer: next });
+}
 
-  // Brief scale animation, then rebuild
+socket.on('shuffle', ({ outer }) => {
+  state.outer = outer;
   elHive.classList.remove('hive-shuffling');
   void elHive.offsetWidth;
   elHive.classList.add('hive-shuffling');
   setTimeout(() => elHive.classList.remove('hive-shuffling'), 220);
-
   buildHive();
-}
+});
 
 /* ─── Date Panel ──────────────────────────────────────────────────────────── */
 function openDatePanel()  { elDatePanel.hidden = false; elOverlay.hidden = false; }
@@ -370,14 +443,17 @@ async function loadPuzzle(date) {
     const puzzle = await puzzleRes.json();
     const room   = await roomRes.json();
 
-    state.date       = date;
-    state.center     = puzzle.center.toUpperCase();
-    state.outerOrig  = puzzle.outer.map(l => l.toUpperCase());
-    state.outer      = [...state.outerOrig];
-    state.totalScore = puzzle.totalScore;
-    state.foundWords = room.foundWords;
-    state.score      = room.score;
-    state.rank       = room.rank;
+    state.date         = date;
+    state.center       = puzzle.center.toUpperCase();
+    state.outerOrig    = puzzle.outer.map(l => l.toUpperCase());
+    state.outer        = [...state.outerOrig];
+    state.totalScore   = puzzle.totalScore;
+    state.foundWords   = room.foundWords;
+    state.score        = room.score;
+    state.rank         = room.rank;
+    state.letterCounts = puzzle.letterCounts || {};
+    state.myFoundWords = new Set();
+    state.pendingWord  = null;
 
     elDateLabel.textContent = formatDateLabel(date);
     elLoading.hidden  = true;
@@ -386,6 +462,7 @@ async function loadPuzzle(date) {
     buildHive();
     renderFoundWords();
     renderScore();
+    renderHints();
     clearWord();
     joinRoom(date);
   } catch (err) {
@@ -450,6 +527,17 @@ document.addEventListener('keydown', e => {
 elDeleteBtn.addEventListener('click', deleteLetter);
 elSubmitBtn.addEventListener('click', submitWord);
 elShuffleBtn.addEventListener('click', shuffleOuter);
+
+elSortTabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    state.sortMode = tab.dataset.sort;
+    elSortTabs.forEach(t => {
+      t.classList.toggle('active', t === tab);
+      t.setAttribute('aria-pressed', t === tab ? 'true' : 'false');
+    });
+    renderFoundWords();
+  });
+});
 
 elDateBtn.addEventListener('click', () => { loadDateList(); openDatePanel(); });
 $id('close-date-panel').addEventListener('click', closeDatePanel);

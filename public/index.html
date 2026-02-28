@@ -66,6 +66,24 @@
   <!-- Game area (hidden until puzzle loads) -->
   <main id="game-area" hidden>
 
+    <!-- Found Words (top, always visible) -->
+    <section class="found-section">
+      <div class="found-header-row">
+        <h2 id="found-header">Found (0)</h2>
+        <div class="sort-tabs" role="group" aria-label="Sort found words">
+          <button class="sort-tab active" data-sort="recent" aria-pressed="true">Recent</button>
+          <button class="sort-tab" data-sort="alpha" aria-pressed="false">A–Z</button>
+          <button class="sort-tab" data-sort="player" aria-pressed="false">Mine</button>
+        </div>
+      </div>
+      <div class="found-words" id="found-words"></div>
+    </section>
+
+    <!-- Letter Hints -->
+    <section class="hints-section" id="hints-section" hidden>
+      <div class="hints-list" id="hints-list"></div>
+    </section>
+
     <!-- Honeycomb Hive -->
     <section class="hive-section">
       <div class="hive" id="hive"></div>
@@ -90,12 +108,6 @@
       <div class="other-player" id="other-player" hidden>
         <span class="dot"></span> <span id="other-player-text"></span>
       </div>
-    </section>
-
-    <!-- Found Words -->
-    <section class="found-section">
-      <h2 id="found-header">Found (0)</h2>
-      <div class="found-words" id="found-words"></div>
     </section>
 
   </main>

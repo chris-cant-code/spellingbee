@@ -64,12 +64,20 @@ app.get('/api/puzzles', (req, res) => {
 app.get('/api/puzzle/:date', (req, res) => {
   const puzzle = db.getPuzzle(req.params.date);
   if (!puzzle) return res.status(404).json({ error: 'Puzzle not found' });
-  // Don't expose answers to client
+
+  // Count valid answers per starting letter (used for hints — doesn't expose words)
+  const letterCounts = {};
+  puzzle.answers.forEach(a => {
+    const ch = a.word[0];
+    letterCounts[ch] = (letterCounts[ch] || 0) + 1;
+  });
+
   res.json({
     date: puzzle.date,
     center: puzzle.center,
     outer: puzzle.outer,
     totalScore: puzzle.total_score,
+    letterCounts,
   });
 });
 
@@ -140,6 +148,12 @@ io.on('connection', (socket) => {
     if (!currentDate) return;
     // Broadcast to others in same room (not sender)
     socket.to(currentDate).emit('typing_update', { text, playerId: socket.id });
+  });
+
+  socket.on('shuffle', ({ outer }) => {
+    if (!currentDate || !Array.isArray(outer)) return;
+    // Broadcast the new tile order to everyone in the room (including sender)
+    io.to(currentDate).emit('shuffle', { outer });
   });
 
   socket.on('submit', ({ word, date }) => {
